@@ -6,6 +6,7 @@ import argparse
 import itertools
 from collections import Counter
 from collections import deque
+import time
 
 import cv2 as cv
 import numpy as np
@@ -14,6 +15,7 @@ import mediapipe as mp
 from utils import CvFpsCalc
 from model import KeyPointClassifier
 from model import PointHistoryClassifier
+
 
 
 def get_args():
@@ -70,6 +72,11 @@ def main():
 
     point_history_classifier = PointHistoryClassifier()
 
+    auto_log_start_time = None 
+
+    adjust_label_by = 0 # Use this to offset the labels by 10 depending on what label you want to start with
+
+
     # Read labels ###########################################################
     with open('model/keypoint_classifier/keypoint_classifier_label.csv',
               encoding='utf-8-sig') as f:
@@ -105,7 +112,11 @@ def main():
         key = cv.waitKey(10)
         if key == 27:  # ESC
             break
-        number, mode = select_mode(key, mode)
+        number, mode, adjust_label_by = select_mode(key, mode, adjust_label_by)
+        # Start auto-logging if mode is 3
+        if mode == 3 and auto_log_start_time is None:
+            auto_log_start_time = time.time()
+
 
         # Camera capture #####################################################
         ret, image = cap.read()
@@ -130,15 +141,24 @@ def main():
                 # Landmark calculation
                 landmark_list = calc_landmark_list(debug_image, hand_landmarks)
 
-                # Conversion to relative coordinates / normalized coordinates
+                # Conversion to relative coordinates / normalized coordinate
                 pre_processed_landmark_list = pre_process_landmark(
                     landmark_list)
                 pre_processed_point_history_list = pre_process_point_history(
                     debug_image, point_history)
                 # Write to the dataset file
-                logging_csv(number, mode, pre_processed_landmark_list,
-                            pre_processed_point_history_list)
+                if mode != 3:  # Avoid duplicate logging in auto-log mode
+                    logging_csv(number, mode, pre_processed_landmark_list,
+                                pre_processed_point_history_list)
 
+                # Auto-logging logic
+                if mode == 3:
+                    current_time = time.time()
+                    if current_time - auto_log_start_time >= 0.2 and number != -1: 
+                        logging_csv(number + adjust_label_by, 1, pre_processed_landmark_list,
+                                    pre_processed_point_history_list)
+                        auto_log_start_time = current_time
+                        print("Logged Index: ", number + adjust_label_by, " Label: ", keypoint_classifier_labels[number], " Offset: ", adjust_label_by, " Number: ", number)
                 # Hand sign classification
                 hand_sign_id = keypoint_classifier(pre_processed_landmark_list)
                 if hand_sign_id == "NA":  # Point gesture
@@ -168,11 +188,12 @@ def main():
                     keypoint_classifier_labels[hand_sign_id],
                     point_history_classifier_labels[most_common_fg_id[0][0]],
                 )
+
         else:
             point_history.append([0, 0])
 
         debug_image = draw_point_history(debug_image, point_history)
-        debug_image = draw_info(debug_image, fps, mode, number)
+        debug_image = draw_info(debug_image, fps, mode, number, adjust_label_by)
 
         # Screen reflection #############################################################
         cv.imshow('Hand Gesture Recognition', debug_image)
@@ -181,7 +202,7 @@ def main():
     cv.destroyAllWindows()
 
 
-def select_mode(key, mode):
+def select_mode(key, mode, adjust_label_by):
     number = -1
     if 48 <= key <= 57:  # 0 ~ 9
         number = key - 48
@@ -191,7 +212,13 @@ def select_mode(key, mode):
         mode = 1
     if key == 104:  # h
         mode = 2
-    return number, mode
+    if key == ord('j'):
+        mode = 3
+    if key == ord('i'):
+        adjust_label_by = adjust_label_by + 10
+    if key == ord('d'):
+        adjust_label_by = adjust_label_by - 10
+    return number, mode, adjust_label_by
 
 
 def calc_bounding_rect(image, landmarks):
@@ -281,7 +308,7 @@ def pre_process_point_history(image, point_history):
 def logging_csv(number, mode, landmark_list, point_history_list):
     if mode == 0:
         pass
-    if mode == 1 and (0 <= number <= 9):
+    if mode == 1 and (0 <= number):
         csv_path = 'model/keypoint_classifier/keypoint.csv'
         with open(csv_path, 'a', newline="") as f:
             writer = csv.writer(f)
@@ -522,14 +549,17 @@ def draw_point_history(image, point_history):
     return image
 
 
-def draw_info(image, fps, mode, number):
+def draw_info(image, fps, mode, number, adjust_label_by):
     cv.putText(image, "FPS:" + str(fps), (10, 30), cv.FONT_HERSHEY_SIMPLEX,
                1.0, (0, 0, 0), 4, cv.LINE_AA)
     cv.putText(image, "FPS:" + str(fps), (10, 30), cv.FONT_HERSHEY_SIMPLEX,
                1.0, (255, 255, 255), 2, cv.LINE_AA)
+    cv.putText(image, 'SET: ' + str(adjust_label_by/10 + 1), (10, 60),
+                   cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1,
+                   cv.LINE_AA)
 
-    mode_string = ['Logging Key Point', 'Logging Point History']
-    if 1 <= mode <= 2:
+    mode_string = ['Logging Key Point', 'Logging Point History', 'Auto-Logging Key Point']
+    if 1 <= mode <= 3:
         cv.putText(image, "MODE:" + mode_string[mode - 1], (10, 90),
                    cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1,
                    cv.LINE_AA)
